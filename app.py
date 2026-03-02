@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,6 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- CONFIG ---
 INFO_API_URL = "https://info-canze1.vercel.app/player-info"
 FONT_FILE = "NotoSans-Bold.ttf"
 
@@ -27,6 +29,8 @@ client = httpx.AsyncClient(
 
 process_pool = ThreadPoolExecutor(max_workers=4)
 
+# --- UTILS ---
+
 def load_unicode_font(size):
     try:
         font_path = os.path.join(os.path.dirname(__file__), FONT_FILE)
@@ -37,22 +41,20 @@ def load_unicode_font(size):
         return ImageFont.load_default()
 
 async def fetch_image_bytes(item_id):
+    """Fetch image bytes from GitHub or return None."""
     if not item_id or str(item_id) == "0" or item_id is None:
         return None
 
     item_id = str(item_id)
-    
     for repo_num in range(1, 7):
-        if repo_num == 1: 
+        if repo_num == 1:
             batch_start, batch_end = 1, 7
         else:
             batch_start = (repo_num - 1) * 6 + 1
             batch_end = batch_start + 6
-            
         for batch_num in range(batch_start, batch_end):
             batch_str = f"{batch_num:02d}"
             url = f"https://raw.githubusercontent.com/djdndbdjfi/free-fire-items-{repo_num}/main/items/batch-{batch_str}/{item_id}.png"
-            
             try:
                 resp = await client.head(url)
                 if resp.status_code == 200:
@@ -68,6 +70,7 @@ def bytes_to_image(img_bytes):
     return Image.new('RGBA', (100, 100), (0, 0, 0, 0))
 
 def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
+    """Combine avatar, banner, pin, and text into final PNG."""
     avatar_img = bytes_to_image(avatar_bytes)
     banner_img = bytes_to_image(banner_bytes)
     pin_img = bytes_to_image(pin_bytes)
@@ -95,6 +98,7 @@ def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
         banner_img = banner_img.resize((new_banner_w, TARGET_HEIGHT), Image.LANCZOS)
     else:
         banner_img = Image.new("RGBA", (800, 400), (50, 50, 50))
+        new_banner_w = 400
 
     final_w = TARGET_HEIGHT + new_banner_w
     final_h = TARGET_HEIGHT
@@ -111,13 +115,13 @@ def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
     text_x = TARGET_HEIGHT + 40 
     text_y = 40 
     
+    stroke_col, text_col = "black", "white"
     def draw_text_with_stroke(x, y, text, font, size):
         for dx in range(-size, size + 1):
             for dy in range(-size, size + 1):
                 draw.text((x + dx, y + dy), text, font=font, fill=stroke_col)
         draw.text((x, y), text, font=font, fill=text_col)
 
-    stroke_col, text_col = "black", "white"
     draw_text_with_stroke(text_x + 25, text_y, name, font_large, 4)
     draw_text_with_stroke(text_x + 25, text_y + 200, guild, font_small, 3)
 
@@ -145,14 +149,17 @@ def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
     img_io.seek(0)
     return img_io
 
+# --- ROUTES ---
+
 @app.get("/")
 async def home():
-    return {"message": "⚡ Ultra Fast Banner API Running",
-           "Made By": "Flexbase",
-           "Telegram": "@Flexbasei",
-           "Your Info Api": INFO_API_URL,
-           "Api Endpoint": "/profile?uid={uid}",
-           "Note": "Join To Us For More 💝"
+    return {
+        "message": "⚡ Ultra Fast Banner API Running",
+        "Made By": "Flexbase",
+        "Telegram": "@Flexbasei",
+        "Your Info Api": INFO_API_URL,
+        "Api Endpoint": "/profile?uid={uid}",
+        "Note": "Join To Us For More 💝"
     }
 
 @app.get("/profile")
@@ -162,51 +169,58 @@ async def get_banner(uid: str):
 
     try:
         resp = await client.get(f"{INFO_API_URL}?uid={uid}")
-        
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail="Info API Error")
-            
+        resp.raise_for_status()
         data = resp.json()
-        acc = data.get("AccountInfo", data)
-        guild = data.get("GuildInfo", {})
-        
-        if not acc: raise HTTPException(status_code=404, detail="Not Found")
-        
-        avatar_task = fetch_image_bytes(acc.get("AccountAvatarId") or acc.get("headPic"))
-        banner_task = fetch_image_bytes(acc.get("AccountBannerId") or acc.get("bannerId"))
-        
-        pin_id = acc.get("pinId") or acc.get("title")
+
+        # --- Adjust to your API keys ---
+        basic_info = data.get("basicInfo", {})
+        profile_info = data.get("profileInfo", {})
+        clan_info = data.get("clanBasicInfo", {})
+
+        avatar_id = profile_info.get("avatarId") or basic_info.get("headPic")
+        banner_id = basic_info.get("bannerId")
+        pin_id = basic_info.get("pinId") or basic_info.get("title")
+
+        avatar_task = fetch_image_bytes(avatar_id)
+        banner_task = fetch_image_bytes(banner_id)
         pin_task = fetch_image_bytes(pin_id) if (pin_id and str(pin_id) != "0") else asyncio.sleep(0)
 
         results = await asyncio.gather(avatar_task, banner_task, pin_task)
         avatar_bytes, banner_bytes, pin_bytes = results[0], results[1], results[2]
-        
         if pin_bytes is None: pin_bytes = b''
 
         loop = asyncio.get_event_loop()
         banner_data = {
-            "AccountLevel": acc.get("AccountLevel") or acc.get("level"),
-            "AccountName": acc.get("AccountName") or acc.get("nickname"),
-            "GuildName": guild.get("GuildName") or guild.get("clanName") or ""
+            "AccountLevel": basic_info.get("level") or 0,
+            "AccountName": basic_info.get("nickname") or "Unknown",
+            "GuildName": clan_info.get("GuildName") or ""
         }
-        
+
         img_io = await loop.run_in_executor(
-            process_pool, 
-            process_banner_image, 
+            process_pool,
+            process_banner_image,
             banner_data, avatar_bytes, banner_bytes, pin_bytes
         )
-        
-        return Response(content=img_io.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
 
+        return Response(
+            content=img_io.getvalue(),
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=300"}
+        )
+
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Info API request failed: {e}")
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- SHUTDOWN ---
 @app.on_event("shutdown")
 async def shutdown_event():
     await client.aclose()
     process_pool.shutdown()
 
+# --- RUN SERVER ---
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
