@@ -177,7 +177,7 @@ async def get_banner(uid: str):
         profile_info = data.get("profileInfo", {})
         clan_info = data.get("clanBasicInfo", {})
 
-        avatar_id = profile_info.get("avatarId") or basic_info.get("headPic")
+        avatar_id = profile_info.get("headPic") or basic_info.get("headPic")
         banner_id = basic_info.get("bannerId")
         pin_id = basic_info.get("pinId") or basic_info.get("title")
 
