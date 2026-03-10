@@ -277,9 +277,9 @@ async def get_banner(uid: str):
         )
 
         return Response(
-            content=img_io.getvalue(),
-            media_type="image/png",
-            headers={"Cache-Control": "public, max-age=300"}
+    content=img,
+    media_type="image/png",
+    headers={"Cache-Control": "public, max-age=300"}
         )
 
     except httpx.RequestError as e:
