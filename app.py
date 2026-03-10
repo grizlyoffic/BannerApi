@@ -19,6 +19,7 @@ app.add_middleware(
 
 # --- CONFIG ---
 INFO_API_URL = "https://info-canze1.vercel.app/player-info"
+ICON_API_URL = "https://item-info-neon.vercel.app/icon?item_id="
 FONT_FILE = "NotoSans-Bold.ttf"
 
 client = httpx.AsyncClient(
@@ -29,7 +30,8 @@ client = httpx.AsyncClient(
 
 process_pool = ThreadPoolExecutor(max_workers=4)
 
-# --- UTILS ---
+
+# ---------------- UTILS ---------------- #
 
 def load_unicode_font(size):
     try:
@@ -40,37 +42,36 @@ def load_unicode_font(size):
     except:
         return ImageFont.load_default()
 
+
 async def fetch_image_bytes(item_id):
-    """Fetch image bytes from GitHub or return None."""
-    if not item_id or str(item_id) == "0" or item_id is None:
+    """
+    Fetch image from icon API
+    """
+    if not item_id or str(item_id) == "0":
         return None
 
-    item_id = str(item_id)
-    for repo_num in range(1, 7):
-        if repo_num == 1:
-            batch_start, batch_end = 1, 7
-        else:
-            batch_start = (repo_num - 1) * 6 + 1
-            batch_end = batch_start + 6
-        for batch_num in range(batch_start, batch_end):
-            batch_str = f"{batch_num:02d}"
-            url = f"https://raw.githubusercontent.com/djdndbdjfi/free-fire-items-{repo_num}/main/items/batch-{batch_str}/{item_id}.png"
-            try:
-                resp = await client.head(url)
-                if resp.status_code == 200:
-                    img_resp = await client.get(url)
-                    return img_resp.content
-            except:
-                continue
+    try:
+        url = f"{ICON_API_URL}{item_id}"
+        resp = await client.get(url)
+
+        if resp.status_code == 200:
+            return resp.content
+
+    except:
+        pass
+
     return None
+
 
 def bytes_to_image(img_bytes):
     if img_bytes:
         return Image.open(io.BytesIO(img_bytes)).convert("RGBA")
     return Image.new('RGBA', (100, 100), (0, 0, 0, 0))
 
+
+# --------------- IMAGE PROCESS --------------- #
+
 def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
-    """Combine avatar, banner, pin, and text into final PNG."""
     avatar_img = bytes_to_image(avatar_bytes)
     banner_img = bytes_to_image(banner_bytes)
     pin_img = bytes_to_image(pin_bytes)
@@ -79,20 +80,30 @@ def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
     name = data.get("AccountName", "Unknown")
     guild = data.get("GuildName", "")
 
-    TARGET_HEIGHT = 400 
+    TARGET_HEIGHT = 400
+
     avatar_img = avatar_img.resize((TARGET_HEIGHT, TARGET_HEIGHT), Image.LANCZOS)
-    
+
     b_w, b_h = banner_img.size
+
     if b_w > 50 and b_h > 50:
         banner_img = banner_img.rotate(3, resample=Image.BICUBIC, expand=True)
+
         b_w, b_h = banner_img.size
-        
-        crop_top, crop_bottom, crop_sides = 0.23, 0.32, 0.17
-        left, top = b_w * crop_sides, b_h * crop_top
-        right, bottom = b_w * (1 - crop_sides), b_h * (1 - crop_bottom)
+
+        crop_top = 0.23
+        crop_bottom = 0.32
+        crop_sides = 0.17
+
+        left = b_w * crop_sides
+        top = b_h * crop_top
+        right = b_w * (1 - crop_sides)
+        bottom = b_h * (1 - crop_bottom)
+
         banner_img = banner_img.crop((left, top, right, bottom))
 
     b_w, b_h = banner_img.size
+
     if b_h > 0:
         new_banner_w = int(TARGET_HEIGHT * (b_w / b_h) * 2.0)
         banner_img = banner_img.resize((new_banner_w, TARGET_HEIGHT), Image.LANCZOS)
@@ -102,10 +113,73 @@ def process_banner_image(data, avatar_bytes, banner_bytes, pin_bytes):
 
     final_w = TARGET_HEIGHT + new_banner_w
     final_h = TARGET_HEIGHT
+
     combined = Image.new("RGBA", (final_w, final_h), (0, 0, 0, 0))
+
     combined.paste(avatar_img, (0, 0))
     combined.paste(banner_img, (TARGET_HEIGHT, 0))
-    
+
+    draw = ImageDraw.Draw(combined)
+
+    font_large = load_unicode_font(125)
+    font_small = load_unicode_font(95)
+    font_level = load_unicode_font(50)
+
+    text_x = TARGET_HEIGHT + 40
+
+    draw.text((text_x, 40), name, font=font_large, fill="white")
+    draw.text((text_x, 180), guild, font=font_small, fill="white")
+    draw.text((text_x, 300), f"Lv.{level}", font=font_level, fill="yellow")
+
+    if pin_img:
+        pin_img = pin_img.resize((120, 120))
+        combined.paste(pin_img, (final_w - 150, 20), pin_img)
+
+    output = io.BytesIO()
+    combined.save(output, format="PNG")
+
+    return output.getvalue()
+
+
+# --------------- API ROUTE --------------- #
+
+@app.get("/player-banner")
+async def player_banner(uid: str, region: str):
+
+    try:
+        resp = await client.get(INFO_API_URL, params={
+            "uid": uid,
+            "region": region
+        })
+
+        if resp.status_code != 200:
+            raise HTTPException(status_code=404, detail="Player not found")
+
+        data = resp.json()
+
+    except Exception:
+        raise HTTPException(status_code=500, detail="Info API error")
+
+    avatar_id = data.get("EquippedAvatar")
+    banner_id = data.get("EquippedBanner")
+    pin_id = data.get("EquippedPin")
+
+    avatar_bytes = await fetch_image_bytes(avatar_id)
+    banner_bytes = await fetch_image_bytes(banner_id)
+    pin_bytes = await fetch_image_bytes(pin_id)
+
+    loop = asyncio.get_event_loop()
+
+    img = await loop.run_in_executor(
+        process_pool,
+        process_banner_image,
+        data,
+        avatar_bytes,
+        banner_bytes,
+        pin_bytes
+    )
+
+    return Response(content=img, media_type="image/png")    
     draw = ImageDraw.Draw(combined)
     
     font_large = load_unicode_font(125) 
